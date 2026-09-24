@@ -2,101 +2,17 @@
 
 ## Overview
 
-We're building a prototype platform that helps hospital staff review patient safety event reports. For each report, the system:
-
 1. **Grades severity:** sorts it into `none`, `some`, or `serious` harm.
 2. **Extracts key facts:** what happened, contributing factors, medications involved.
 3. **Finds similar reports:** links related past cases and explains why they matched.
 4. **Groups into themes:** clusters reports into topics, shows how those change over time, and flags unusual spikes and new kinds of events.
 
-Everything is packaged in a Docker container so the sponsor can run it on real hospital data inside their secure environment. **Real data never leaves the hospital.** We develop only on the synthetic dataset.
 
-## What already exists
-
-| Repo | What it does | Status |
-|---|---|---|
-| `3-bucket-grader` | Severity grading (TF-IDF baseline + DistilBERT) | Works on the 80k dataset. `serious` recall is 0.82 and needs to go higher |
-| `midas-pattern-phase-local` | Similar-case search, theme clustering, weekly/monthly trends, spike detection, novelty flag | Works end to end, but only tested on a 23-report sample |
-
-Nothing exists yet for extraction, the backend, security, or the sponsor container. The frontend is in progress.
-
-**First integration task:** Move both repos into one shared repo (layout below) so they use the same data loading, the same columns, and the same splits.
-
-## How the pieces fit
-
-```
-Synthetic reports
-      │
-      ▼
-[Ingest + validate] ──► [Database] ◄──► [Backend API] ◄──► [Frontend]
-                             ▲
-      ┌──────────────┬───────┴──────┬──────────────┐
-  [Severity]   [Extraction]   [Similar cases]   [Themes + trends]
-  (grader)        (new)       (pattern engine)  (pattern engine)
-```
-
-Every model reads a report and writes its results into one shared format (see below). The backend serves that format to the frontend.
-
-## Shared data format ("enriched report")
-
-Everyone builds against this shape. If you need to change it, open a PR and get the team to agree first. Several fields line up with what the pattern engine already outputs (`cluster`, `cluster_name`, `similarity`, `novelty_score`).
-
-```json
-{
-  "report_id": "string",
-  "event_date": "YYYY-MM-DD",
-  "location": "string",
-  "service": "string",
-  "event_type": "string",
-  "text": {
-    "event_comments": "string",
-    "manager_comments": "string",
-    "unit_actions_taken": "string"
-  },
-  "severity": {
-    "bucket": "none | some | serious",
-    "confidence": 0.0,
-    "model_version": "string",
-    "explanation": ["top words or phrases that drove the prediction"]
-  },
-  "extracted": {
-    "contributing_factors": ["string"],
-    "medications": ["string"]
-  },
-  "similar_cases": [
-    {
-      "report_id": "string",
-      "similarity": 0.0,
-      "snippet": "string",
-      "reasons": ["shared medication: heparin", "same event type: medication error"]
-    }
-  ],
-  "theme": { "cluster_id": 0, "cluster_name": "string" },
-  "novelty": { "score": 0.0, "threshold": 0.0, "is_novel": false }
-}
-```
-
-## Repo layout
-
-```
-pipeline/          ingest, validation, shared data prep (one loader for everyone)
-models/severity/   from 3-bucket-grader
-models/extraction/ new
-models/patterns/   from midas-pattern-phase-local (search, clusters, trends, novelty)
-api/               backend service
-frontend/          website
-eval/              shared evaluation scripts + results table
-deploy/            Dockerfile, docker-compose, sponsor container
-docs/              architecture diagrams, setup guide
-```
-
----
 
 ## Roles
 
 ### 1. Frontend
 
-**Goal:** A clean, easy-to-use website for exploring safety reports.
 
 **What to do:**
 - Report detail page showing the text, severity, extracted facts, theme, and a "new kind of event" badge when the novelty flag is on.
@@ -106,9 +22,8 @@ docs/              architecture diagrams, setup guide
 - The pattern engine already outputs a 2-D map of all reports (`embedding_projection.csv`). This could become an interactive "map of events" view.
 - Run usability testing with a few people (think-aloud sessions plus a short survey such as SUS).
 
-**Done when:** A user can find a report, understand it, jump to related cases, and spot a trend without help.
 
-**Depends on:** Backend API. Until it's ready, build against mock data in the shared format, or the CSV outputs from the pattern engine.
+**Depends on:** Backend API.
 
 ---
 
@@ -129,7 +44,6 @@ docs/              architecture diagrams, setup guide
   - Pull out contributing factors and medications from the narrative text.
   - These feed Similar Cases' "why linked" reasons and Themes' medication clustering, so agree on the output early.
 
-**Done when:** Both models run through one function call, write to the shared format, and have results logged in `eval/`.
 
 ---
 
@@ -147,7 +61,6 @@ docs/              architecture diagrams, setup guide
 - Compare MiniLM against one or two other local embedding models (e.g. a clinical or biomedical model) using that labeled set.
 - Tune the novelty threshold on the full dataset, and check that "novel" reports actually look unusual.
 
-**Done when:** Every report has top-k similar cases with readable reasons, retrieval quality is measured, and the model choice is backed by numbers.
 
 **Depends on:** Extraction output for the richer reasons (phrase and event-type reasons work fine before that).
 
@@ -178,7 +91,7 @@ docs/              architecture diagrams, setup guide
 **What to do:**
 - **One data loader for everyone.** The grader reads a parquet file and the pattern engine reads a CSV with its own column-name handling (`normalize_schema`). Merge these into one shared loader in `pipeline/` so every model sees the same reports and columns.
 - Ingestion pipeline: load synthetic data, validate it (missing fields, bad dates, empty text), and reject bad rows with clear errors.
-- Database schema (Postgres + pgvector suggested) based on the shared format.
+- Database schema (Postgres + pgvector suggested)
 - API endpoints (FastAPI suggested):
   - `GET /reports` with search and filters
   - `GET /reports/{id}` with full enriched report
@@ -212,38 +125,3 @@ docs/              architecture diagrams, setup guide
 
 **Done when:** The sponsor can run the container with one command and send back results, and the privacy controls are documented.
 
----
-
-## Shared responsibilities
-
-- **Evaluation:** Everyone logs their model results in the shared table in `eval/`, using the same data and split.
-- **Documentation:** Everyone writes their own section of the final report, setup guide, and handoff docs.
-- **Final deliverables:** Technical report, demo, poster, and one-page summary. Split these up in week 10.
-
-## Timeline
-
-| Weeks | Focus |
-|---|---|
-| 1–2 | Merge the two repos, one shared data loader, agree on the shared format |
-| 3–5 | Working end to end (ugly is fine) |
-| 5–6 | First container sent to the sponsor |
-| 6–9 | Improve models, explanations, UI, and dashboards |
-| 10–12 | Full evaluation, report, poster, demo |
-
-## Ground rules
-
-- **Never commit data.** No parquet, CSV, embeddings, or output files that contain report text.
-  - The pattern engine's `.gitignore` is good but doesn't block `*.parquet`, which is the format the grader uses. Add it when merging.
-- **No hardcoded file paths.** Use a config file or environment variables (the grader currently points at a local Downloads folder).
-- **Work on branches**, open PRs, and get one teammate's review before merging.
-- **One issue per task** on the project board.
-- **Weekly sync** to share progress and blockers.
-
-## Open questions for the sponsor
-
-- When would triage happen: as soon as a report is submitted, or after the manager adds comments? This decides which text fields the severity model is allowed to use.
-- Some reports say "no harm noted" but carry a harm grade. Is that a labeling issue, or should the model learn it?
-- Can reviewers help label whether similar-case matches are truly related? Even a small set would let us measure retrieval properly.
-- What hardware will the container run on (CPU/GPU, memory, internet access)?
-- What format do they want results returned in?
-- Can we use their preliminary models as baselines?
